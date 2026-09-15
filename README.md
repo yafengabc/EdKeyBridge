@@ -40,8 +40,8 @@ powershell -File build.ps1
 Or manually:
 
 ```bash
-go run github.com/akavel/rsrc@v0.10.2 -manifest app.manifest -ico icon/app.ico -arch amd64 -o rsrc_windows_amd64.syso
-go build -trimpath -ldflags="-s -w -H windowsgui" -o edkeybridge.exe .
+go run github.com/akavel/rsrc@v0.10.2 -manifest app.manifest -ico icon/app.ico -arch amd64 -o src/rsrc_windows_amd64.syso
+go build -trimpath -ldflags="-s -w -H windowsgui" -o edkeybridge.exe ./src
 upx --best --lzma edkeybridge.exe
 ```
 

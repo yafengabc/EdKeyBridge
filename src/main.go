@@ -39,6 +39,10 @@ func runSelfTest() {
 		b.WriteString("TOML roundtrip OK\n")
 	}
 
+	// 打印版本号：用于验证 -ldflags -X 的注入路径没写错（源码挪到 src/ 后
+	// 包的 import path 变成 edkeybridge/src，写错的话这里会显示 dev）
+	b.WriteString("version = " + versionInfo() + "\n")
+
 	sys := detectSystemLang()
 	b.WriteString("system lang = " + sys + "\n")
 	if resolveLang("auto") != sys {

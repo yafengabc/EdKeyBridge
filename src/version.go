@@ -6,8 +6,11 @@ import (
 )
 
 // version is injected at build time via
-//   -ldflags "-X edkeybridge.version=$(git describe --tags --always)"
+//   -ldflags "-X main.version=$(git describe --tags --always)"
 // and falls back to "dev" when not set.
+//
+// 坑：main 包的 -X 只认 **main.<var>**，写成 import path（edkeybridge/src.version、
+// 或源码在根目录时的 edkeybridge.version）不会报错，但注入静默失效，版本一直是 dev。
 var version = "dev"
 
 func vcsInfo() (rev, committed string, modified bool) {
