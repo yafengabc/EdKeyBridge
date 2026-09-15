@@ -40,15 +40,12 @@ const (
 	// 不加它时文本顶对齐，和带边框的 EDIT/COMBOBOX 放同一行会明显错位。
 	SS_CENTERIMAGE = 0x0200
 
-	WM_COMMAND       = 0x0111
-	WM_SIZE          = 0x0005
-	WM_CLOSE         = 0x0010
-	WM_DESTROY       = 0x0002
-	WM_TIMER         = 0x0113
-	WM_GETTEXT       = 0x000D
-	WM_GETTEXTLENGTH = 0x000E
-	WM_SETFONT       = 0x0030
-	WM_SETTEXT       = 0x000C
+	WM_COMMAND = 0x0111
+	WM_SIZE    = 0x0005
+	WM_CLOSE   = 0x0010
+	WM_DESTROY = 0x0002
+	WM_TIMER   = 0x0113
+	WM_SETFONT = 0x0030
 
 	BN_CLICKED    = 0
 	CBN_SELCHANGE = 1
@@ -92,8 +89,6 @@ const (
 	SM_CYICON   = 12
 	SM_CXSMICON = 49
 	SM_CYSMICON = 50
-
-	SW_SHOW = 5
 
 	MB_OK           = 0x00000000
 	MB_YESNO        = 0x00000004

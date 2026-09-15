@@ -22,7 +22,6 @@ const (
 	NIF_TIP     = 0x00000004
 	NIF_INFO    = 0x00000010
 
-	NIIF_NONE = 0x00000000
 	NIIF_INFO = 0x00000001
 
 	// WM_TRAYICON 是托盘回调消息；lParam 低字是鼠标消息（WM_LBUTTONUP 等）。

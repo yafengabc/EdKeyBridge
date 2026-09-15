@@ -18,5 +18,6 @@ __pycache__/
 Thumbs.db
 Desktop.ini
 
-# NOTE: rsrc_windows_amd64.syso is intentionally tracked — it embeds the
+# NOTE: src/rsrc_windows_amd64.syso is intentionally tracked — it embeds the
 # comctl32 v6 manifest + app icon so a plain `go build` yields a themed exe.
+# It must live next to the sources: Go only links .syso files in the package dir.

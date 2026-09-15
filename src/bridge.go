@@ -251,12 +251,12 @@ type keyState struct {
 }
 
 type bridge struct {
-	evCh    chan keyEvt
-	states  sync.Map
+	evCh     chan keyEvt
+	states   sync.Map
 	mapCache sync.Map
-	digits  bool
-	letters bool
-	special bool
+	digits   bool
+	letters  bool
+	special  bool
 }
 
 func newBridge() *bridge {
@@ -509,16 +509,6 @@ func installHook() error {
 	}
 	hookHandle = h
 	return nil
-}
-
-func runMessageLoop() {
-	var msg winMSG
-	for {
-		ret, _, _ := pGetMessage.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
-		if ret == 0 || int32(ret) == -1 {
-			return
-		}
-	}
 }
 
 // startBridge 初始化按键集合、启动处理协程并安装键盘钩子。
