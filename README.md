@@ -31,10 +31,11 @@ configurable minimum hold time so fast game frames don't miss the key.
 
 ## Build
 
-Requires **Go 1.23+** and **UPX**.
+Requires **Go 1.23+** (UPX optional — the build script uses it if present).
 
-```powershell
-powershell -File build.ps1
+```bash
+go run build.go        # rsrc -> go build -> upx
+go run build.go icon   # regenerate icon/app.ico + icon/preview.png
 ```
 
 Or manually:

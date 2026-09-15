@@ -28,10 +28,11 @@ EdKeyBridge 安装低级键盘钩子，吞掉这些 `VK_PACKET` 的 Unicode 事�
 
 ## 编译
 
-需要 **Go 1.23+** 与 **UPX**。
+需要 **Go 1.23+**（UPX 可选——脚本检测到就用，没有就跳过压缩）。
 
-```powershell
-powershell -File build.ps1
+```bash
+go run build.go        # rsrc -> go build -> upx
+go run build.go icon   # 重新生成 icon/app.ico 与 icon/preview.png
 ```
 
 或手动：

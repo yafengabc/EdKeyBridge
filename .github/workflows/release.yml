@@ -28,7 +28,7 @@ jobs:
         run: choco install upx -y
 
       - name: Build (stamps version, embeds manifest + icon, UPX)
-        run: bash build.sh
+        run: go run build.go
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
