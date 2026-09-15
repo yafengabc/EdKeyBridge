@@ -7,10 +7,6 @@ edkeybridge.toml
 edkeybridge_selftest.log
 edkeybridge_selftest.toml
 
-# Python caches (icon generator script)
-__pycache__/
-*.pyc
-
 # Project data / editor state
 .workbuddy/
 
