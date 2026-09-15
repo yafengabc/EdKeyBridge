@@ -3,6 +3,33 @@
 EdKeyBridge 的重要变更都记在这里。
 （English version: [CHANGELOG.md](CHANGELOG.md)）
 
+## [v0.1.2] - 2026-09-16
+
+### 变更
+
+- **仓库现在是 100% Go。** 删掉 `build.sh`（Shell）与 `tools/make_icon.py`（Python），
+  所有可执行代码都是 Go。
+- **`go run build.go`** 取代 `build.sh`：依次执行 rsrc（清单 + 图标）→ `go build` → UPX
+  （UPX 可选，没装也能构建成功）。`go run build.go icon` 重新生成 `icon/app.ico`
+  与 `icon/preview.png`。
+- **源码移入 `src/`。** 12 个 `.go` 连同 `rsrc_windows_amd64.syso` 一起挪进 `src/`，
+  根目录只留文档、`build.go`、`icon/`、`tools/`、`go.mod`。
+  `.syso` 必须留在包目录里——Go 只链接包目录内找到的资源文件。
+
+### 修复
+
+- **版本戳从未生效。** `-ldflags -X` 对 main 包只认 `main.<var>`；`-X edkeybridge.version`
+  （挪目录后是 `edkeybridge/src.version`）会静默失效，所以之前每个正式包显示的版本都是
+  `dev` 而不是 tag。现改为 `-X main.version=...`，且 `-selftest` 会打印版本号，
+  路径写错立刻能看出来。
+
+### 移除
+
+- `app.rc` —— 改用 rsrc 后就没用的 windres 资源脚本。
+- `simulate_android.ps1` —— 早期模拟安卓端 Unicode 注入的辅助脚本。
+- 死代码：`src/bridge.go` 的 `runMessageLoop()`，以及未使用的常量
+  （`SW_SHOW`、`WM_GETTEXT`、`WM_GETTEXTLENGTH`、`WM_SETTEXT`、`NIIF_NONE`）。
+
 ## [v0.1.1] - 2026-09-16
 
 ### 新增

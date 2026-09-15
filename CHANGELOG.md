@@ -3,6 +3,33 @@
 All notable changes to EdKeyBridge are documented here.
 (中文版本见 [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md))
 
+## [v0.1.2] - 2026-09-16
+
+### Changed
+
+- **The repository is now 100% Go.** `build.sh` (Shell) and `tools/make_icon.py` (Python) are
+  gone; everything executable is Go.
+- **`go run build.go`** replaces `build.sh`: it runs rsrc (manifest + icon) → `go build` → UPX
+  (UPX optional — the build still succeeds without it). `go run build.go icon` regenerates
+  `icon/app.ico` and `icon/preview.png`.
+- **Sources moved into `src/`.** All 12 `.go` files plus `rsrc_windows_amd64.syso` now live in
+  `src/`, so the project root only holds docs, `build.go`, `icon/`, `tools/` and `go.mod`.
+  The `.syso` has to stay in the package directory — Go only links resources found there.
+
+### Fixed
+
+- **Version stamping never worked.** `-ldflags -X` only accepts `main.<var>` for a main package;
+  `-X edkeybridge.version` (and `edkeybridge/src.version` after the move) fails silently, so
+  every release build reported `dev` instead of its tag. Now `-X main.version=...`, and
+  `-selftest` prints the version so a broken path is visible immediately.
+
+### Removed
+
+- `app.rc` — leftover windres resource script, unused since the switch to rsrc.
+- `simulate_android.ps1` — early helper for simulating Android-side Unicode injection.
+- Dead code: `runMessageLoop()` in `src/bridge.go` and unused constants
+  (`SW_SHOW`, `WM_GETTEXT`, `WM_GETTEXTLENGTH`, `WM_SETTEXT`, `NIIF_NONE`).
+
 ## [v0.1.1] - 2026-09-16
 
 ### Added
