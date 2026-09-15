@@ -13,7 +13,7 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        shell: bash   # build.ps1 is plain PowerShell, but the runner default is pwsh
+        shell: bash   # avoid PowerShell; git bash is available on the runner
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,7 +28,7 @@ jobs:
         run: choco install upx -y
 
       - name: Build (stamps version, embeds manifest + icon, UPX)
-        run: ./build.ps1
+        run: bash build.sh
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
