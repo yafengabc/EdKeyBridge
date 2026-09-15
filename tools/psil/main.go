@@ -1,37 +1,70 @@
 //go:build windows
 
-// Command psil lists the running processes together with their integrity
+// Command psil-gui shows the running processes together with their integrity
 // level (IL) — i.e. the "privilege level" that decides whether UIPI silently
-// drops input sent to a higher-privileged window.
+// drops input sent to a higher-privileged window. It is a small Win32 GUI
+// (syscall only, no third-party widgets) on top of the same enumeration the
+// console version used to print.
+//
+// Build & run (clean GUI, no console window):
+//
+//	go build -H windowsgui -o psil.exe ./tools/psil && ./psil.exe
+//
+// Or just for a quick look (a console host stays attached):
 //
 //	go run ./tools/psil
 //
 // Processes you cannot open (system processes, protected processes, other
 // sessions) show "n/a" for the IL column. Run as administrator to see more.
+// Row colour tells you at a glance who could block injected input:
+// red = high, purple = system/protected, gray = low.
 package main
 
 import (
-	"fmt"
 	"sort"
 	"syscall"
+	"unicode/utf16"
 	"unsafe"
 )
 
 var (
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
+	user32   = syscall.NewLazyDLL("user32.dll")
+	comctl32 = syscall.NewLazyDLL("comctl32.dll")
 	advapi32 = syscall.NewLazyDLL("advapi32.dll")
+	shell32  = syscall.NewLazyDLL("shell32.dll")
 )
 
 var (
-	pCreateToolhelp32Snapshot  = kernel32.NewProc("CreateToolhelp32Snapshot")
-	pProcess32FirstW           = kernel32.NewProc("Process32FirstW")
-	pProcess32NextW            = kernel32.NewProc("Process32NextW")
-	pOpenProcess               = kernel32.NewProc("OpenProcess")
-	pCloseHandle               = kernel32.NewProc("CloseHandle")
-	pOpenProcessToken          = advapi32.NewProc("OpenProcessToken")
-	pGetTokenInformation       = advapi32.NewProc("GetTokenInformation")
-	pGetSidSubAuthorityCount   = advapi32.NewProc("GetSidSubAuthorityCount")
-	pGetSidSubAuthority        = advapi32.NewProc("GetSidSubAuthority")
+	pCreateToolhelp32Snapshot = kernel32.NewProc("CreateToolhelp32Snapshot")
+	pProcess32FirstW          = kernel32.NewProc("Process32FirstW")
+	pProcess32NextW           = kernel32.NewProc("Process32NextW")
+	pOpenProcess              = kernel32.NewProc("OpenProcess")
+	pCloseHandle              = kernel32.NewProc("CloseHandle")
+	pGetModuleFileNameW       = kernel32.NewProc("GetModuleFileNameW")
+	pOpenProcessToken         = advapi32.NewProc("OpenProcessToken")
+	pGetTokenInformation      = advapi32.NewProc("GetTokenInformation")
+	pGetSidSubAuthorityCount  = advapi32.NewProc("GetSidSubAuthorityCount")
+	pGetSidSubAuthority       = advapi32.NewProc("GetSidSubAuthority")
+	pGetCurrentProcess        = kernel32.NewProc("GetCurrentProcess")
+
+	pRegisterClassExW = user32.NewProc("RegisterClassExW")
+	pCreateWindowExW  = user32.NewProc("CreateWindowExW")
+	pDefWindowProcW   = user32.NewProc("DefWindowProcW")
+	pShowWindow       = user32.NewProc("ShowWindow")
+	pUpdateWindow     = user32.NewProc("UpdateWindow")
+	pGetMessageW      = user32.NewProc("GetMessageW")
+	pTranslateMessage = user32.NewProc("TranslateMessage")
+	pDispatchMessageW = user32.NewProc("DispatchMessageW")
+	pPostQuitMessage  = user32.NewProc("PostQuitMessage")
+	pSendMessageW     = user32.NewProc("SendMessageW")
+	pSetWindowPos     = user32.NewProc("SetWindowPos")
+	pGetClientRect    = user32.NewProc("GetClientRect")
+	pLoadCursorW      = user32.NewProc("LoadCursorW")
+	pMessageBoxW      = user32.NewProc("MessageBoxW")
+
+	pInitCommonControlsEx = comctl32.NewProc("InitCommonControlsEx")
+	pShellExecuteW        = shell32.NewProc("ShellExecuteW")
 )
 
 const (
@@ -39,6 +72,69 @@ const (
 	PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 	TOKEN_QUERY                       = 0x0008
 	TokenIntegrityLevel               = 25
+
+	IDC_ARROW = 32512
+
+	WS_OVERLAPPEDWINDOW = 0x00CF0000
+	WS_VISIBLE          = 0x10000000
+	WS_CHILD            = 0x40000000
+	WS_EX_CLIENTEDGE    = 0x00000200
+
+	SW_SHOWNORMAL = 5
+	SW_SHOW       = 5
+
+	WM_DESTROY = 0x0002
+	WM_SIZE    = 0x0005
+	WM_COMMAND = 0x0111
+	WM_NOTIFY  = 0x004E
+
+	COLOR_BTNFACE = 15
+
+	WC_LISTVIEW                  = "SysListView32"
+	LVM_FIRST                    = 0x1000
+	LVM_DELETEALLITEMS           = LVM_FIRST + 9
+	LVM_INSERTCOLUMNW            = LVM_FIRST + 97
+	LVM_INSERTITEMW              = LVM_FIRST + 77
+	LVM_SETITEMW                 = LVM_FIRST + 76
+	LVM_SETEXTENDEDLISTVIEWSTYLE = LVM_FIRST + 54
+	LVS_REPORT                   = 0x0001
+	LVS_SINGLESEL                = 0x0004
+	LVS_SHOWSELALWAYS            = 0x0008
+	LVS_NOSORTHEADER             = 0x00008000
+	LVIF_TEXT                    = 0x0001
+	LVCF_FMT                     = 0x0001
+	LVCF_WIDTH                   = 0x0002
+	LVCF_TEXT                    = 0x0004
+	LVCF_SUBITEM                 = 0x0008
+	LVCF_ORDER                   = 0x0020
+	LVCFMT_LEFT                  = 0x0000
+	LVS_EX_FULLROWSELECT         = 0x0020
+	LVS_EX_GRIDLINES             = 0x0001
+	LVS_EX_DOUBLEBUFFER          = 0x00010000
+
+	STATUSCLASSNAME = "msctls_statusbar32"
+	SB_SETTEXTW     = 0x040B // WM_USER + 11
+	SBARS_SIZEGRIP  = 0x0100
+
+	ICC_LISTVIEW_CLASSES = 0x0001
+	ICC_BAR_CLASSES      = 0x0004
+
+	NM_CUSTOMDRAW       = 0xFFFFFFEC
+	CDDS_PREPAINT       = 0x00000001
+	CDDS_ITEMPREPAINT   = 0x00010001
+	CDRF_NOTIFYITEMDRAW = 0x00000020
+	CDRF_NEWFONT        = 0x00000002
+
+	IDC_LIST    = 100
+	IDC_REFRESH = 101
+	IDC_ADMIN   = 102
+	IDC_HINT    = 103
+
+	BS_PUSHBUTTON = 0x00000000
+	SS_LEFT       = 0x00000000
+
+	MB_OK        = 0x00000000
+	MB_ICONERROR = 0x00000010
 )
 
 // SECURITY_MANDATORY_*_RID
@@ -50,7 +146,6 @@ const (
 	ilProtected = 0x5000
 )
 
-// processEntry32 mirrors the Win32 PROCESSENTRY32W struct.
 type processEntry32 struct {
 	dwSize              uint32
 	cntUsage            uint32
@@ -71,11 +166,99 @@ type procInfo struct {
 	basePri int32
 }
 
+// lvItem matches the 64-bit LVITEMW layout (88 bytes). The compile-time check
+// below fails the build if the layout drifts.
+type lvItem struct {
+	mask       uint32
+	iItem      int32
+	iSubItem   int32
+	state      uint32
+	stateMask  uint32
+	pszText    *uint16
+	cchTextMax int32
+	iImage     int32
+	lParam     uintptr
+	iIndent    int32
+	iGroupId   int32
+	cColumns   uint32
+	puColumns  *uint32
+	piColFmt   *int32
+	iGroup     int32
+}
+
+// compile-time layout assertion for LVITEMW (Win64 = 88 bytes).
+var _ [88]struct{} = [unsafe.Sizeof(lvItem{})]struct{}{}
+
+type lvColumn struct {
+	mask       uint32
+	fmt        int32
+	cx         int32
+	pszText    *uint16
+	cchTextMax int32
+	iSubItem   int32
+	iImage     int32
+	iOrder     int32
+}
+
+var _ [40]struct{} = [unsafe.Sizeof(lvColumn{})]struct{}{}
+
+type initCommonControls struct {
+	dwSize uint32
+	dwICC  uint32
+}
+
+type wndClassEx struct {
+	cbSize        uint32
+	style         uint32
+	lpfnWndProc   uintptr
+	cbClsExtra    int32
+	cbWndExtra    int32
+	hInstance     uintptr
+	hIcon         uintptr
+	hCursor       uintptr
+	hbrBackground uintptr
+	lpszMenuName  *uint16
+	lpszClassName *uint16
+	hIconSm       uintptr
+}
+
+type rect struct {
+	left, top, right, bottom int32
+}
+
+type nmhdr struct {
+	hwndFrom uintptr
+	idFrom   uintptr
+	code     uint32
+}
+
+type nmCustomDraw struct {
+	hdr       nmhdr
+	drawStage uint32
+	hdc       uintptr
+	rc        [4]int32
+	itemSpec  uintptr
+	itemState uint32
+	itemParam uintptr
+}
+
+type nmListCustomDraw struct {
+	nmcd      nmCustomDraw
+	clrText   uint32
+	clrTextBk uint32
+	iSubItem  int32
+}
+
+var (
+	gHwnd, gHwndLV, gHwndStatus, gHwndHint, gHwndRefresh, gHwndAdmin uintptr
+	gRows                                                            []procInfo
+)
+
 func tokenIL(token uintptr) (uint32, bool) {
 	var need uint32
 	pGetTokenInformation.Call(token, TokenIntegrityLevel, 0, 0, uintptr(unsafe.Pointer(&need)))
 	if need == 0 {
-		need = 64 // 第一次只取长度失败时按常见大小分配
+		need = 64
 	}
 	buf := make([]byte, need)
 	r, _, _ := pGetTokenInformation.Call(token, TokenIntegrityLevel,
@@ -83,7 +266,6 @@ func tokenIL(token uintptr) (uint32, bool) {
 	if r == 0 {
 		return 0, false
 	}
-	// TOKEN_MANDATORY_LABEL.Label.Sid 位于缓冲区起始处（PSID）。
 	sid := *(*uintptr)(unsafe.Pointer(&buf[0]))
 	if sid == 0 {
 		return 0, false
@@ -96,7 +278,6 @@ func tokenIL(token uintptr) (uint32, bool) {
 	if cnt == 0 {
 		return 0, false
 	}
-	// IL RID 是最后一个子授权项。
 	subPtr, _, _ := pGetSidSubAuthority.Call(sid, uintptr(cnt-1))
 	if subPtr == 0 {
 		return 0, false
@@ -112,6 +293,17 @@ func processIL(pid uint32) (uint32, bool) {
 	defer pCloseHandle.Call(h)
 	var token uintptr
 	r, _, _ := pOpenProcessToken.Call(h, TOKEN_QUERY, uintptr(unsafe.Pointer(&token)))
+	if r == 0 {
+		return 0, false
+	}
+	defer pCloseHandle.Call(token)
+	return tokenIL(token)
+}
+
+func selfIL() (uint32, bool) {
+	proc, _, _ := pGetCurrentProcess.Call()
+	var token uintptr
+	r, _, _ := pOpenProcessToken.Call(proc, TOKEN_QUERY, uintptr(unsafe.Pointer(&token)))
 	if r == 0 {
 		return 0, false
 	}
@@ -156,18 +348,26 @@ func ilRank(s string) int {
 	}
 }
 
-func truncate(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
+// ilColor 返回该完整性级别对应的文字颜色（RGB）。
+func ilColor(s string) uint32 {
+	switch s {
+	case "protected", "system":
+		return 0x800080 // 紫
+	case "high":
+		return 0x0000FF // 红
+	case "medium+":
+		return 0x800000 // 深蓝
+	case "medium":
+		return 0x000000 // 黑
+	default:
+		return 0x808080 // 灰
 	}
-	return s
 }
 
-func main() {
+func enumerate() []procInfo {
 	snap, _, _ := pCreateToolhelp32Snapshot.Call(TH32CS_SNAPPROCESS, 0)
-	if snap == ^uintptr(0) { // INVALID_HANDLE_VALUE
-		fmt.Println("CreateToolhelp32Snapshot failed")
-		return
+	if snap == ^uintptr(0) {
+		return nil
 	}
 	defer pCloseHandle.Call(snap)
 
@@ -194,18 +394,323 @@ func main() {
 		}
 	}
 
-	// 高权限在前，方便看清哪些进程可能挡住注入；同级按 PID 升序。
 	sort.Slice(procs, func(i, j int) bool {
 		if procs[i].il != procs[j].il {
 			return ilRank(procs[i].il) > ilRank(procs[j].il)
 		}
 		return procs[i].pid < procs[j].pid
 	})
+	return procs
+}
 
-	fmt.Printf("%-7s %-30s %-10s %s\n", "PID", "NAME", "INTEGRITY", "BASEPRI")
-	fmt.Println("----------------------------------------------------------------------")
-	for _, p := range procs {
-		fmt.Printf("%-7d %-30s %-10s %d\n", p.pid, truncate(p.name, 30), p.il, p.basePri)
+func setStatus() {
+	self, ok := selfIL()
+	selfTxt := "?"
+	if ok {
+		selfTxt = ilName(self)
 	}
-	fmt.Printf("\n%d processes\n", len(procs))
+	admin := ""
+	if selfTxt == "high" || selfTxt == "system" || selfTxt == "protected" {
+		admin = "（管理员）"
+	}
+	msg := utf16Str("共 " + itoa(len(gRows)) + " 个进程 · 本程序 IL=" + selfTxt + admin + " · 以管理员运行可见更多")
+	pSendMessageW.Call(gHwndStatus, SB_SETTEXTW, 0, uintptr(unsafe.Pointer(&msg[0])))
+}
+
+func refreshList() {
+	gRows = enumerate()
+	pSendMessageW.Call(gHwndLV, LVM_DELETEALLITEMS, 0, 0)
+	for i, p := range gRows {
+		var item lvItem
+		item.mask = LVIF_TEXT
+		item.iItem = int32(i)
+		ps := utf16Str(itoa(int(p.pid)))
+		item.pszText = &ps[0]
+		pSendMessageW.Call(gHwndLV, LVM_INSERTITEMW, 0, uintptr(unsafe.Pointer(&item)))
+
+		setSub := func(sub int32, text string) {
+			var it lvItem
+			it.mask = LVIF_TEXT
+			it.iItem = int32(i)
+			it.iSubItem = sub
+			ts := utf16Str(text)
+			it.pszText = &ts[0]
+			pSendMessageW.Call(gHwndLV, LVM_SETITEMW, 0, uintptr(unsafe.Pointer(&it)))
+		}
+		setSub(1, p.name)
+		setSub(2, p.il)
+		setSub(3, itoa(int(p.basePri)))
+	}
+	setStatus()
+}
+
+func layout() {
+	var rc rect
+	pGetClientRect.Call(gHwnd, uintptr(unsafe.Pointer(&rc)))
+	w := rc.right - rc.left
+	h := rc.bottom - rc.top
+	const gap = 8
+	const sbH = 22
+	const btnH = 24
+	const hintH = 26
+
+	lvY := int32(gap) + hintH + gap
+	lvH := h - lvY - (btnH + gap + sbH)
+	if lvH < 40 {
+		lvH = 40
+	}
+	pSetWindowPos.Call(gHwndHint, 0, uintptr(gap), uintptr(gap), uintptr(w-2*gap), uintptr(hintH), 0)
+	pSetWindowPos.Call(gHwndLV, 0, uintptr(gap), uintptr(lvY), uintptr(w-2*gap), uintptr(lvH), 0)
+	by := h - sbH - btnH
+	pSetWindowPos.Call(gHwndRefresh, 0, uintptr(gap), uintptr(by), 90, btnH, 0)
+	pSetWindowPos.Call(gHwndAdmin, 0, uintptr(gap+90+gap), uintptr(by), 140, btnH, 0)
+	pSendMessageW.Call(gHwndStatus, WM_SIZE, 0, 0)
+}
+
+func onCommand(id int32) {
+	switch id {
+	case IDC_REFRESH:
+		refreshList()
+	case IDC_ADMIN:
+		exe := moduleFileName()
+		if exe == "" {
+			mb("无法获取自身路径", "错误")
+			return
+		}
+		rs := utf16Str("runas")
+		re := utf16Str(exe)
+		re2 := utf16Str("")
+		r, _, _ := pShellExecuteW.Call(0,
+			uintptr(unsafe.Pointer(&rs[0])),
+			uintptr(unsafe.Pointer(&re[0])),
+			0, uintptr(unsafe.Pointer(&re2[0])),
+			SW_SHOWNORMAL)
+		if r <= 32 {
+			mb("提权失败（返回码 "+itoa(int(r))+"）", "提示")
+			return
+		}
+		pPostQuitMessage.Call(0)
+	}
+}
+
+func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
+	switch msg {
+	case WM_COMMAND:
+		id := int32(uint16(wParam & 0xFFFF))
+		onCommand(id)
+		return 0
+	case WM_NOTIFY:
+		nm := (*nmhdr)(unsafe.Pointer(lParam))
+		if nm.idFrom == IDC_LIST && nm.code == NM_CUSTOMDRAW {
+			cd := (*nmListCustomDraw)(unsafe.Pointer(lParam))
+			switch cd.nmcd.drawStage {
+			case CDDS_PREPAINT:
+				return CDRF_NOTIFYITEMDRAW
+			case CDDS_ITEMPREPAINT:
+				idx := int(cd.nmcd.itemSpec)
+				if idx >= 0 && idx < len(gRows) {
+					cd.clrText = ilColor(gRows[idx].il)
+				}
+				return CDRF_NEWFONT
+			}
+		}
+		return 0
+	case WM_SIZE:
+		layout()
+		return 0
+	case WM_DESTROY:
+		pPostQuitMessage.Call(0)
+		return 0
+	}
+	r, _, _ := pDefWindowProcW.Call(hwnd, msg, wParam, lParam)
+	return r
+}
+
+func moduleFileName() string {
+	buf := make([]uint16, 260)
+	pGetModuleFileNameW.Call(0, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	return syscall.UTF16ToString(buf)
+}
+
+func utf16Str(s string) []uint16 {
+	w := utf16.Encode([]rune(s))
+	w = append(w, 0)
+	return w
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		b[i] = '-'
+	}
+	return string(b[i:])
+}
+
+func mb(text, title string) {
+	ts := utf16Str(text)
+	tl := utf16Str(title)
+	pMessageBoxW.Call(0,
+		uintptr(unsafe.Pointer(&ts[0])),
+		uintptr(unsafe.Pointer(&tl[0])),
+		MB_OK|MB_ICONERROR)
+}
+
+func getModuleHandle() uintptr {
+	p, _, _ := kernel32.NewProc("GetModuleHandleW").Call(0)
+	return p
+}
+
+func main() {
+	var icc initCommonControls
+	icc.dwSize = uint32(unsafe.Sizeof(icc))
+	icc.dwICC = ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES
+	pInitCommonControlsEx.Call(uintptr(unsafe.Pointer(&icc)))
+
+	hInstance := getModuleHandle()
+
+	className := utf16Str("psilgui")
+	staticClass := utf16Str("STATIC")
+	listClass := utf16Str(WC_LISTVIEW)
+	buttonClass := utf16Str("BUTTON")
+	statusClass := utf16Str(STATUSCLASSNAME)
+	hCursor, _, _ := pLoadCursorW.Call(0, uintptr(IDC_ARROW))
+
+	var wc wndClassEx
+	wc.cbSize = uint32(unsafe.Sizeof(wc))
+	wc.lpfnWndProc = syscall.NewCallback(wndProc)
+	wc.hInstance = hInstance
+	wc.hCursor = hCursor
+	wc.hbrBackground = uintptr(COLOR_BTNFACE + 1)
+	wc.lpszClassName = &className[0]
+	if r, _, _ := pRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
+		mb("注册窗口类失败", "错误")
+		return
+	}
+
+	title := utf16Str("进程完整性级别查看器 — Process Integrity Levels")
+	gHwnd, _, _ = pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(&className[0])),
+		uintptr(unsafe.Pointer(&title[0])),
+		WS_OVERLAPPEDWINDOW|WS_VISIBLE,
+		0x80000000, 0x80000000,
+		560, 620,
+		0, 0, hInstance, 0,
+	)
+	if gHwnd == 0 {
+		return // headless 沙箱：优雅退出
+	}
+
+	hintText := utf16Str("高 IL 进程（红）可通过 UIPI 拦截低 IL 程序的输入；以管理员运行可见更多。")
+	gHwndHint, _, _ = pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(&staticClass[0])),
+		uintptr(unsafe.Pointer(&hintText[0])),
+		WS_CHILD|WS_VISIBLE|SS_LEFT,
+		8, 8, 540, 26,
+		gHwnd, uintptr(IDC_HINT), hInstance, 0,
+	)
+
+	gHwndLV, _, _ = pCreateWindowExW.Call(
+		WS_EX_CLIENTEDGE,
+		uintptr(unsafe.Pointer(&listClass[0])),
+		0,
+		WS_CHILD|WS_VISIBLE|LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS|LVS_NOSORTHEADER,
+		8, 42, 540, 480,
+		gHwnd, uintptr(IDC_LIST), hInstance, 0,
+	)
+	if gHwndLV == 0 {
+		mb("创建列表失败", "错误")
+		return
+	}
+	ex := LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER
+	pSendMessageW.Call(gHwndLV, LVM_SETEXTENDEDLISTVIEWSTYLE, uintptr(ex), uintptr(ex))
+
+	cols := []struct {
+		text string
+		cx   int32
+	}{
+		{"PID", 70},
+		{"NAME", 250},
+		{"INTEGRITY", 120},
+		{"BASEPRI", 70},
+	}
+	for i, c := range cols {
+		var col lvColumn
+		col.mask = LVCF_FMT | LVCF_WIDTH | LVCF_TEXT | LVCF_SUBITEM | LVCF_ORDER
+		col.fmt = LVCFMT_LEFT
+		col.cx = c.cx
+		cs := utf16Str(c.text)
+		col.pszText = &cs[0]
+		col.iSubItem = int32(i)
+		col.iOrder = int32(i)
+		pSendMessageW.Call(gHwndLV, LVM_INSERTCOLUMNW, uintptr(i), uintptr(unsafe.Pointer(&col)))
+	}
+
+	refreshText := utf16Str("刷新")
+	gHwndRefresh, _, _ = pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(&buttonClass[0])),
+		uintptr(unsafe.Pointer(&refreshText[0])),
+		WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
+		8, 540, 90, 24,
+		gHwnd, uintptr(IDC_REFRESH), hInstance, 0,
+	)
+	adminText := utf16Str("以管理员运行")
+	gHwndAdmin, _, _ = pCreateWindowExW.Call(
+		0,
+		uintptr(unsafe.Pointer(&buttonClass[0])),
+		uintptr(unsafe.Pointer(&adminText[0])),
+		WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,
+		106, 540, 140, 24,
+		gHwnd, uintptr(IDC_ADMIN), hInstance, 0,
+	)
+
+	gHwndStatus, _, _ = pCreateWindowExW.Call(
+		SBARS_SIZEGRIP,
+		uintptr(unsafe.Pointer(&statusClass[0])),
+		0,
+		WS_CHILD|WS_VISIBLE,
+		0, 0, 0, 0,
+		gHwnd, 0, hInstance, 0,
+	)
+
+	refreshList()
+	layout()
+
+	pShowWindow.Call(gHwnd, SW_SHOW)
+	pUpdateWindow.Call(gHwnd)
+
+	var m struct {
+		hwnd    uintptr
+		message uint32
+		wParam  uintptr
+		lParam  uintptr
+		time    uint32
+		pt      struct {
+			x, y int32
+		}
+	}
+	for {
+		r, _, _ := pGetMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
+		if int32(r) <= 0 {
+			break
+		}
+		pTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
+		pDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
+	}
 }
