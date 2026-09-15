@@ -1,0 +1,22 @@
+# Build output
+edkeybridge.exe
+edkeybridge_*.exe
+
+# Runtime config & self-test artifacts (per-user, not source)
+edkeybridge.toml
+edkeybridge_selftest.log
+edkeybridge_selftest.toml
+
+# Python caches (icon generator script)
+__pycache__/
+*.pyc
+
+# Project data / editor state
+.workbuddy/
+
+# OS noise
+Thumbs.db
+Desktop.ini
+
+# NOTE: rsrc_windows_amd64.syso is intentionally tracked — it embeds the
+# comctl32 v6 manifest + app icon so a plain `go build` yields a themed exe.

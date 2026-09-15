@@ -1,0 +1,36 @@
+name: Release
+
+# Build & publish a Windows executable whenever a tag like v1.0.0 is pushed.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # required to create the GitHub Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash   # build.ps1 is plain PowerShell, but the runner default is pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe needs tags -> full history
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install UPX
+        run: choco install upx -y
+
+      - name: Build (stamps version, embeds manifest + icon, UPX)
+        run: ./build.ps1
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: edkeybridge.exe
