@@ -3,7 +3,8 @@
 Bridge keystrokes sent from the **RustDesk Android client** to a **Windows** host
 into real physical key events that **Elite Dangerous** can actually read.
 
-[中文文档 / Chinese](README.zh-CN.md)
+[中文文档 / Chinese](README.zh-CN.md) ·
+[Changelog](CHANGELOG.md) · [更新日志](CHANGELOG.zh-CN.md)
 
 ## Why this exists
 

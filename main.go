@@ -53,6 +53,7 @@ func runSelfTest() {
 	}
 
 	curLang = resolveLang(cfg.Lang)
+	b.WriteString(traySelfTest() + "\n")
 	b.WriteString("T(start)=" + T("start") + "\n")
 	b.WriteString("T(quit)=" + T("quit") + "\n")
 
@@ -73,6 +74,9 @@ func runSelfTest() {
 
 func main() {
 	selftest := flag.Bool("selftest", false, "运行自检并退出")
+	// -resume：由提权重启（UAC）拉起时使用。强制"启动即开始桥接"，
+	// 不受配置文件里 autostart 的影响 —— 提权的目的就是让桥接着上，不该停在"已停止"。
+	resume := flag.Bool("resume", false, "提权重启后自动恢复桥接")
 	flag.Parse()
 	if *selftest {
 		runSelfTest()
@@ -83,6 +87,9 @@ func main() {
 	runtime.LockOSThread()
 
 	cfg = loadSettings(configPath())
+	if *resume {
+		cfg.Autostart = true
+	}
 	curLang = resolveLang(cfg.Lang)
 	log.Println("EdKeyBridge " + versionInfo())
 
@@ -95,6 +102,8 @@ func main() {
 
 	setLangCombo()
 	applyLang()
+	addTrayIcon()
+	log.Println(fmt.Sprintf(T("cfg_path"), configPath()))
 
 	if !isAdmin() {
 		log.Println(T("admin_warn"))
@@ -103,6 +112,12 @@ func main() {
 	if cfg.Autostart {
 		if err := startBridge(); err != nil {
 			log.Println(err.Error())
+		} else if *resume {
+			log.Println(T("elevate_resumed"))
+			flashTaskbar(g.hwnd, true)
+			// 旧实例退出前会把它临时最小化的游戏还原回去，那一下会把焦点抢走。
+			// 所以延后一点再把本程序抬到前台，否则刚抬起来又被游戏盖住。
+			pSetTimer.Call(g.hwnd, timerBringToFront, 900, 0)
 		}
 	}
 	updateStartLabel()

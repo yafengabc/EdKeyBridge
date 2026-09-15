@@ -68,8 +68,9 @@ func TestLegacyKeysField(t *testing.T) {
 
 func TestLoadDefaultsWhenMissing(t *testing.T) {
 	s := settingsFromMap(map[string]string{})
+	// 默认：启动即开始桥接（Autostart=true），三组按键全开，最小按下 80ms
 	if s.Lang != "auto" || s.HoldMs != 80 || !s.Reinject ||
-		!s.KeysDig || !s.KeysLet || !s.KeysSpec || s.Autostart {
+		!s.KeysDig || !s.KeysLet || !s.KeysSpec || !s.Autostart {
 		t.Fatalf("defaults wrong: %+v", s)
 	}
 }

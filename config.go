@@ -35,7 +35,7 @@ func defaultSettings() Settings {
 		Reinject:  true,
 		Scancode:  false,
 		Diagnostic: false,
-		Autostart: false, // 默认不桥接，需用户点“开始”
+		Autostart: true, // 启动即开始桥接（可在界面里取消勾选并保存）
 		Verbose:   false,
 	}
 }

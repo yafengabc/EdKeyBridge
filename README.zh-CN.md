@@ -3,7 +3,7 @@
 把 **RustDesk 安卓客户端** 发往 **Windows** 被控端的键盘输入，转换成
 《精英危险》(Elite Dangerous) 能真正响应的**真实物理按键**。
 
-[English](README.md)
+[English](README.md) · [更新日志](CHANGELOG.zh-CN.md) · [Changelog](CHANGELOG.md)
 
 ## 为什么需要它
 
