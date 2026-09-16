@@ -21,7 +21,9 @@
 package main
 
 import (
+	"runtime"
 	"sort"
+	"sync"
 	"syscall"
 	"unicode/utf16"
 	"unsafe"
@@ -58,6 +60,7 @@ var (
 	pDispatchMessageW = user32.NewProc("DispatchMessageW")
 	pPostQuitMessage  = user32.NewProc("PostQuitMessage")
 	pSendMessageW     = user32.NewProc("SendMessageW")
+	pPostMessageW     = user32.NewProc("PostMessageW")
 	pSetWindowPos     = user32.NewProc("SetWindowPos")
 	pGetClientRect    = user32.NewProc("GetClientRect")
 	pLoadCursorW      = user32.NewProc("LoadCursorW")
@@ -87,6 +90,8 @@ const (
 	WM_SIZE    = 0x0005
 	WM_COMMAND = 0x0111
 	WM_NOTIFY  = 0x004E
+	WM_PAINT   = 0x000F
+	WM_APP_REFRESH = 0x8001
 
 	COLOR_BTNFACE = 15
 
@@ -111,6 +116,9 @@ const (
 	LVS_EX_FULLROWSELECT         = 0x0020
 	LVS_EX_GRIDLINES             = 0x0001
 	LVS_EX_DOUBLEBUFFER          = 0x00010000
+
+	SWP_NOZORDER  = 0x0004
+	SWP_NOACTIVATE = 0x0010
 
 	STATUSCLASSNAME = "msctls_statusbar32"
 	SB_SETTEXTW     = 0x040B // WM_USER + 11
@@ -186,7 +194,6 @@ type lvItem struct {
 	iGroup     int32
 }
 
-// compile-time layout assertion for LVITEMW (Win64 = 88 bytes).
 var _ [88]struct{} = [unsafe.Sizeof(lvItem{})]struct{}{}
 
 type lvColumn struct {
@@ -226,32 +233,58 @@ type rect struct {
 	left, top, right, bottom int32
 }
 
+// nmhdr matches the 64-bit NMHDR layout. Used only to read idFrom/code from a
+// WM_NOTIFY lParam (offsets 8 / 16 — correct even though Go pads this struct to
+// 24; we never write through it).
 type nmhdr struct {
 	hwndFrom uintptr
 	idFrom   uintptr
 	code     uint32
 }
 
+// nmCustomDraw matches the 64-bit NMCUSTOMDRAW layout. IMPORTANT: it is FLATTENED
+// (no nested nmhdr). Nesting nmhdr makes Go tail-pad it to 24 bytes (20 -> 24 for
+// 8-byte alignment), shifting every field after code by 4 and corrupting the
+// custom-draw read — which froze the ListView. Flattened, the layout is exactly
+// 64 bytes: hwndFrom 0, idFrom 8, code 16, drawStage 20, hdc 24, rc 32,
+// itemSpec 48, itemState 52, itemParam 56.
 type nmCustomDraw struct {
-	hdr       nmhdr
+	hwndFrom  uintptr
+	idFrom    uintptr
+	code      uint32
 	drawStage uint32
 	hdc       uintptr
 	rc        [4]int32
-	itemSpec  uintptr
+	itemSpec  uint32
 	itemState uint32
 	itemParam uintptr
 }
 
+// nmListCustomDraw matches the NMLVCUSTOMDRAW prefix we actually read/write
+// (clrText / clrTextBk / iSubItem). Fields after iSubItem are left out: we
+// never touch them, and reading this prefix of the larger Windows struct is safe.
 type nmListCustomDraw struct {
-	nmcd      nmCustomDraw
+	hwndFrom  uintptr
+	idFrom    uintptr
+	code      uint32
+	drawStage uint32
+	hdc       uintptr
+	rc        [4]int32
+	itemSpec  uint32
+	itemState uint32
+	itemParam uintptr
 	clrText   uint32
 	clrTextBk uint32
 	iSubItem  int32
 }
 
+// compile-time layout assertion for NMCUSTOMDRAW (Win64 = 64 bytes).
+var _ [64]struct{} = [unsafe.Sizeof(nmCustomDraw{})]struct{}{}
+
 var (
 	gHwnd, gHwndLV, gHwndStatus, gHwndHint, gHwndRefresh, gHwndAdmin uintptr
-	gRows                                                            []procInfo
+	gMu   sync.Mutex
+	gRows []procInfo
 )
 
 func tokenIL(token uintptr) (uint32, bool) {
@@ -348,7 +381,7 @@ func ilRank(s string) int {
 	}
 }
 
-// ilColor 返回该完整性级别对应的文字颜色（RGB）。
+// ilColor 返回该完整性级别对应的文字颜色（RGB，0xBBGGRR）。
 func ilColor(s string) uint32 {
 	switch s {
 	case "protected", "system":
@@ -403,24 +436,28 @@ func enumerate() []procInfo {
 	return procs
 }
 
-func setStatus() {
-	self, ok := selfIL()
-	selfTxt := "?"
-	if ok {
-		selfTxt = ilName(self)
-	}
-	admin := ""
-	if selfTxt == "high" || selfTxt == "system" || selfTxt == "protected" {
-		admin = "（管理员）"
-	}
-	msg := utf16Str("共 " + itoa(len(gRows)) + " 个进程 · 本程序 IL=" + selfTxt + admin + " · 以管理员运行可见更多")
-	pSendMessageW.Call(gHwndStatus, SB_SETTEXTW, 0, uintptr(unsafe.Pointer(&msg[0])))
+// startEnum 在后台 goroutine 里枚举进程，完成后把结果写回 gRows 并给主窗口
+// 投一个 WM_APP_REFRESH。这样即便某个进程句柄调用很慢，UI 线程也永远不被卡住。
+func startEnum() {
+	go func() {
+		procs := enumerate()
+		gMu.Lock()
+		gRows = procs
+		gMu.Unlock()
+		if gHwnd != 0 {
+			pPostMessageW.Call(gHwnd, WM_APP_REFRESH, 0, 0)
+		}
+	}()
 }
 
-func refreshList() {
-	gRows = enumerate()
+// populateList 读取最新结果并填充 ListView。必须在 UI 线程调用。
+func populateList() {
+	gMu.Lock()
+	rows := gRows
+	gMu.Unlock()
+
 	pSendMessageW.Call(gHwndLV, LVM_DELETEALLITEMS, 0, 0)
-	for i, p := range gRows {
+	for i, p := range rows {
 		var item lvItem
 		item.mask = LVIF_TEXT
 		item.iItem = int32(i)
@@ -444,7 +481,27 @@ func refreshList() {
 	setStatus()
 }
 
+func setStatus() {
+	gMu.Lock()
+	n := len(gRows)
+	gMu.Unlock()
+	self, ok := selfIL()
+	selfTxt := "?"
+	if ok {
+		selfTxt = ilName(self)
+	}
+	admin := ""
+	if selfTxt == "high" || selfTxt == "system" || selfTxt == "protected" {
+		admin = "（管理员）"
+	}
+	msg := utf16Str("共 " + itoa(n) + " 个进程 · 本程序 IL=" + selfTxt + admin + " · 以管理员运行可见更多")
+	pSendMessageW.Call(gHwndStatus, SB_SETTEXTW, 0, uintptr(unsafe.Pointer(&msg[0])))
+}
+
 func layout() {
+	if gHwndLV == 0 {
+		return
+	}
 	var rc rect
 	pGetClientRect.Call(gHwnd, uintptr(unsafe.Pointer(&rc)))
 	w := rc.right - rc.left
@@ -459,18 +516,21 @@ func layout() {
 	if lvH < 40 {
 		lvH = 40
 	}
-	pSetWindowPos.Call(gHwndHint, 0, uintptr(gap), uintptr(gap), uintptr(w-2*gap), uintptr(hintH), 0)
-	pSetWindowPos.Call(gHwndLV, 0, uintptr(gap), uintptr(lvY), uintptr(w-2*gap), uintptr(lvH), 0)
+	flags := uintptr(SWP_NOZORDER | SWP_NOACTIVATE)
+	pSetWindowPos.Call(gHwndHint, 0, uintptr(gap), uintptr(gap), uintptr(w-2*gap), uintptr(hintH), flags)
+	pSetWindowPos.Call(gHwndLV, 0, uintptr(gap), uintptr(lvY), uintptr(w-2*gap), uintptr(lvH), flags)
 	by := h - sbH - btnH
-	pSetWindowPos.Call(gHwndRefresh, 0, uintptr(gap), uintptr(by), 90, btnH, 0)
-	pSetWindowPos.Call(gHwndAdmin, 0, uintptr(gap+90+gap), uintptr(by), 140, btnH, 0)
-	pSendMessageW.Call(gHwndStatus, WM_SIZE, 0, 0)
+	pSetWindowPos.Call(gHwndRefresh, 0, uintptr(gap), uintptr(by), 90, btnH, flags)
+	pSetWindowPos.Call(gHwndAdmin, 0, uintptr(gap+90+gap), uintptr(by), 140, btnH, flags)
+	if gHwndStatus != 0 {
+		pSendMessageW.Call(gHwndStatus, WM_SIZE, 0, 0)
+	}
 }
 
 func onCommand(id int32) {
 	switch id {
 	case IDC_REFRESH:
-		refreshList()
+		startEnum()
 	case IDC_ADMIN:
 		exe := moduleFileName()
 		if exe == "" {
@@ -495,6 +555,11 @@ func onCommand(id int32) {
 
 func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	switch msg {
+	case WM_PAINT:
+		// 主窗口自己不画东西，交给 DefWindowProc 配对 BeginPaint/EndPaint，
+		// 否则更新区域永远不被清空 → 持续重绘 → 卡死。
+		r, _, _ := pDefWindowProcW.Call(hwnd, msg, wParam, lParam)
+		return r
 	case WM_COMMAND:
 		id := int32(uint16(wParam & 0xFFFF))
 		onCommand(id)
@@ -503,17 +568,27 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		nm := (*nmhdr)(unsafe.Pointer(lParam))
 		if nm.idFrom == IDC_LIST && nm.code == NM_CUSTOMDRAW {
 			cd := (*nmListCustomDraw)(unsafe.Pointer(lParam))
-			switch cd.nmcd.drawStage {
+			switch cd.drawStage {
 			case CDDS_PREPAINT:
 				return CDRF_NOTIFYITEMDRAW
 			case CDDS_ITEMPREPAINT:
-				idx := int(cd.nmcd.itemSpec)
-				if idx >= 0 && idx < len(gRows) {
-					cd.clrText = ilColor(gRows[idx].il)
+				idx := int(cd.itemSpec)
+				gMu.Lock()
+				ok := idx >= 0 && idx < len(gRows)
+				il := ""
+				if ok {
+					il = gRows[idx].il
+				}
+				gMu.Unlock()
+				if ok {
+					cd.clrText = ilColor(il)
 				}
 				return CDRF_NEWFONT
 			}
 		}
+		return 0
+	case WM_APP_REFRESH:
+		populateList()
 		return 0
 	case WM_SIZE:
 		layout()
@@ -689,12 +764,16 @@ func main() {
 		gHwnd, 0, hInstance, 0,
 	)
 
-	refreshList()
 	layout()
-
 	pShowWindow.Call(gHwnd, SW_SHOW)
 	pUpdateWindow.Call(gHwnd)
 
+	// 窗口显示后再去枚举，且放到后台线程，UI 线程立即进消息循环、全程可响应。
+	startEnum()
+
+	// 消息循环必须锁在创建窗口的这条 OS 线程上（syscall.NewCallback 的要求，
+	// 也是 EdKeyBridge 验证过不卡死的关键）。
+	runtime.LockOSThread()
 	var m struct {
 		hwnd    uintptr
 		message uint32

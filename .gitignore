@@ -1,6 +1,8 @@
 # Build output
 edkeybridge.exe
 edkeybridge_*.exe
+psil.exe
+psil_*.exe
 
 # Runtime config & self-test artifacts (per-user, not source)
 edkeybridge.toml
