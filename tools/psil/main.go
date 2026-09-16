@@ -23,6 +23,7 @@ package main
 import (
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"unicode/utf16"
@@ -105,7 +106,6 @@ const (
 	LVS_REPORT                   = 0x0001
 	LVS_SINGLESEL                = 0x0004
 	LVS_SHOWSELALWAYS            = 0x0008
-	LVS_NOSORTHEADER             = 0x00008000
 	LVIF_TEXT                    = 0x0001
 	LVCF_FMT                     = 0x0001
 	LVCF_WIDTH                   = 0x0002
@@ -132,6 +132,9 @@ const (
 	CDDS_ITEMPREPAINT   = 0x00010001
 	CDRF_NOTIFYITEMDRAW = 0x00000020
 	CDRF_NEWFONT        = 0x00000002
+
+	LVN_FIRST       = 0xFFFFFF9C
+	LVN_COLUMNCLICK = LVN_FIRST - 8 // 0xFFFFFF94：ListView 通知码从 LVN_FIRST 往下数
 
 	IDC_LIST    = 100
 	IDC_REFRESH = 101
@@ -242,16 +245,18 @@ type nmhdr struct {
 	code     uint32
 }
 
-// nmCustomDraw matches the 64-bit NMCUSTOMDRAW layout. IMPORTANT: it is FLATTENED
-// (no nested nmhdr). Nesting nmhdr makes Go tail-pad it to 24 bytes (20 -> 24 for
-// 8-byte alignment), shifting every field after code by 4 and corrupting the
-// custom-draw read — which froze the ListView. Flattened, the layout is exactly
-// 64 bytes: hwndFrom 0, idFrom 8, code 16, drawStage 20, hdc 24, rc 32,
-// itemSpec 48, itemState 52, itemParam 56.
+// nmCustomDraw matches the 64-bit NMCUSTOMDRAW layout. It is FLATTENED (no nested
+// nmhdr) so the field offsets line up with the real Win64 notification memory.
+// On Win64 NMHDR is 24 bytes (hwndFrom 0, idFrom 8, code 16, +4 tail pad), so
+// drawStage sits at 24 (NOT 20): hwndFrom 0, idFrom 8, code 16, [pad] 20,
+// drawStage 24, hdc 32, rc 40, itemSpec 56, itemState 60, itemParam 64.
+// (The earlier "flatten without the 4-byte pad" read drawStage from padding = 0,
+// so CDDS_* stages never matched and row coloring silently did nothing.)
 type nmCustomDraw struct {
 	hwndFrom  uintptr
 	idFrom    uintptr
 	code      uint32
+	_         [4]byte
 	drawStage uint32
 	hdc       uintptr
 	rc        [4]int32
@@ -267,6 +272,7 @@ type nmListCustomDraw struct {
 	hwndFrom  uintptr
 	idFrom    uintptr
 	code      uint32
+	_         [4]byte
 	drawStage uint32
 	hdc       uintptr
 	rc        [4]int32
@@ -278,13 +284,43 @@ type nmListCustomDraw struct {
 	iSubItem  int32
 }
 
-// compile-time layout assertion for NMCUSTOMDRAW (Win64 = 64 bytes).
-var _ [64]struct{} = [unsafe.Sizeof(nmCustomDraw{})]struct{}{}
+// compile-time layout assertion for NMCUSTOMDRAW (Win64 = 72 bytes).
+var _ [72]struct{} = [unsafe.Sizeof(nmCustomDraw{})]struct{}{}
+
+// compile-time layout assertion for NMLVCUSTOMDRAW prefix (Win64 = 88 bytes).
+var _ [88]struct{} = [unsafe.Sizeof(nmListCustomDraw{})]struct{}{}
+
+// nmListView matches the prefix of NMLISTVIEW we need (iSubItem, the clicked
+// column). Flattened like nmCustomDraw so offsets line up with the real Win64
+// notification memory. NMHDR is 24 bytes (code @16 + 4 tail pad), so iItem is at
+// 24 and iSubItem at 28 — NOT 24. A header click reports iItem = -1, so reading
+// iSubItem from offset 24 would always yield -1 and fall through to the BASEPRI
+// (default) sort for every column.
+type nmListView struct {
+	hwndFrom uintptr
+	idFrom   uintptr
+	code     uint32
+	_        [4]byte
+	iItem    int32
+	iSubItem int32
+	uNewState uint32
+	uOldState uint32
+	uChanged  uint32
+	ptX, ptY int32
+	lParam   uintptr
+}
+
+// compile-time layout assertion for NMLISTVIEW (Win64 = 64 bytes). iSubItem
+// must sit at offset 28; if this ever fails the struct drifted and a
+// column-click would sort by the wrong field (the "abstract ordering" symptom).
+var _ [64]struct{} = [unsafe.Sizeof(nmListView{})]struct{}{}
 
 var (
 	gHwnd, gHwndLV, gHwndStatus, gHwndHint, gHwndRefresh, gHwndAdmin uintptr
-	gMu   sync.Mutex
-	gRows []procInfo
+	gMu      sync.Mutex
+	gRows    []procInfo
+	gSortCol int = 0  // 默认按 PID 列（最直观的数字序）
+	gSortDir int = 1  // 1 升序；-1 降序
 )
 
 func tokenIL(token uintptr) (uint32, bool) {
@@ -427,13 +463,32 @@ func enumerate() []procInfo {
 		}
 	}
 
-	sort.Slice(procs, func(i, j int) bool {
-		if procs[i].il != procs[j].il {
-			return ilRank(procs[i].il) > ilRank(procs[j].il)
-		}
-		return procs[i].pid < procs[j].pid
-	})
 	return procs
+}
+
+// applySort 按当前 gSortCol/gSortDir 对 gRows 排序。调用方需持有 gMu。
+func applySort() {
+	sort.SliceStable(gRows, func(i, j int) bool {
+		// before 返回升序时 x 是否应在 y 之前。
+		before := func(x, y procInfo) bool {
+			switch gSortCol {
+			case 0: // PID
+				return x.pid < y.pid
+			case 1: // NAME
+				return strings.ToLower(x.name) < strings.ToLower(y.name)
+			case 2: // INTEGRITY
+				return ilRank(x.il) < ilRank(y.il)
+			default: // BASEPRI
+				return x.basePri < y.basePri
+			}
+		}
+		if gSortDir < 0 {
+			// 降序必须用严格反向比较，否则相等元素会同时返回 true，
+			// 违反 sort 的严格弱序要求，可能产出非单调（"乱"）的序列。
+			return before(gRows[j], gRows[i])
+		}
+		return before(gRows[i], gRows[j])
+	})
 }
 
 // startEnum 在后台 goroutine 里枚举进程，完成后把结果写回 gRows 并给主窗口
@@ -453,7 +508,9 @@ func startEnum() {
 // populateList 读取最新结果并填充 ListView。必须在 UI 线程调用。
 func populateList() {
 	gMu.Lock()
-	rows := gRows
+	applySort()
+	rows := make([]procInfo, len(gRows))
+	copy(rows, gRows)
 	gMu.Unlock()
 
 	pSendMessageW.Call(gHwndLV, LVM_DELETEALLITEMS, 0, 0)
@@ -484,6 +541,8 @@ func populateList() {
 func setStatus() {
 	gMu.Lock()
 	n := len(gRows)
+	col := gSortCol
+	dir := gSortDir
 	gMu.Unlock()
 	self, ok := selfIL()
 	selfTxt := "?"
@@ -494,7 +553,23 @@ func setStatus() {
 	if selfTxt == "high" || selfTxt == "system" || selfTxt == "protected" {
 		admin = "（管理员）"
 	}
-	msg := utf16Str("共 " + itoa(n) + " 个进程 · 本程序 IL=" + selfTxt + admin + " · 以管理员运行可见更多")
+	var colName string
+	switch col {
+	case 0:
+		colName = "PID"
+	case 1:
+		colName = "名称"
+	case 2:
+		colName = "完整性"
+	default:
+		colName = "基础优先级"
+	}
+	dirName := "升序"
+	if dir < 0 {
+		dirName = "降序"
+	}
+	msg := utf16Str("共 " + itoa(n) + " 个进程 · 排序=" + colName + dirName +
+		" · 本程序 IL=" + selfTxt + admin + " · 以管理员运行可见更多")
 	pSendMessageW.Call(gHwndStatus, SB_SETTEXTW, 0, uintptr(unsafe.Pointer(&msg[0])))
 }
 
@@ -553,6 +628,30 @@ func onCommand(id int32) {
 	}
 }
 
+// onColumnClick 处理表头点击：同一列再次点击切换升/降序；切换到一个新列时按该列
+// 合适的默认方向排序。这样每列都有自己独立的"排序方式"——不仅是比较器不同
+// （数值/字母/等级），连默认方向也因列而异。
+func onColumnClick(col int) {
+	gMu.Lock()
+	if gSortCol == col {
+		gSortDir = -gSortDir
+	} else {
+		gSortCol = col
+		gSortDir = defaultSortDir(col)
+	}
+	gMu.Unlock()
+	populateList()
+}
+
+// defaultSortDir 返回每列首次点击时的默认方向：INTEGRITY 列降序（高 IL 进程在前，
+// 因为你最关心谁会挡输入），PID/名称/基础优先级 升序。
+func defaultSortDir(col int) int {
+	if col == 2 { // INTEGRITY
+		return -1
+	}
+	return 1
+}
+
 func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	switch msg {
 	case WM_PAINT:
@@ -566,24 +665,30 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		return 0
 	case WM_NOTIFY:
 		nm := (*nmhdr)(unsafe.Pointer(lParam))
-		if nm.idFrom == IDC_LIST && nm.code == NM_CUSTOMDRAW {
-			cd := (*nmListCustomDraw)(unsafe.Pointer(lParam))
-			switch cd.drawStage {
-			case CDDS_PREPAINT:
-				return CDRF_NOTIFYITEMDRAW
-			case CDDS_ITEMPREPAINT:
-				idx := int(cd.itemSpec)
-				gMu.Lock()
-				ok := idx >= 0 && idx < len(gRows)
-				il := ""
-				if ok {
-					il = gRows[idx].il
+		if nm.idFrom == IDC_LIST {
+			switch nm.code {
+			case NM_CUSTOMDRAW:
+				cd := (*nmListCustomDraw)(unsafe.Pointer(lParam))
+				switch cd.drawStage {
+				case CDDS_PREPAINT:
+					return CDRF_NOTIFYITEMDRAW
+				case CDDS_ITEMPREPAINT:
+					idx := int(cd.itemSpec)
+					gMu.Lock()
+					ok := idx >= 0 && idx < len(gRows)
+					il := ""
+					if ok {
+						il = gRows[idx].il
+					}
+					gMu.Unlock()
+					if ok {
+						cd.clrText = ilColor(il)
+					}
+					return CDRF_NEWFONT
 				}
-				gMu.Unlock()
-				if ok {
-					cd.clrText = ilColor(il)
-				}
-				return CDRF_NEWFONT
+			case LVN_COLUMNCLICK:
+				nl := (*nmListView)(unsafe.Pointer(lParam))
+				onColumnClick(int(nl.iSubItem))
 			}
 		}
 		return 0
@@ -704,7 +809,7 @@ func main() {
 		WS_EX_CLIENTEDGE,
 		uintptr(unsafe.Pointer(&listClass[0])),
 		0,
-		WS_CHILD|WS_VISIBLE|LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS|LVS_NOSORTHEADER,
+		WS_CHILD|WS_VISIBLE|LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS,
 		8, 42, 540, 480,
 		gHwnd, uintptr(IDC_LIST), hInstance, 0,
 	)
